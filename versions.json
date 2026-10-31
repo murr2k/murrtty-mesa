@@ -1,0 +1,13 @@
+{
+  "mesa": {
+    "version": "26.2.6",
+    "sha256": "b9436b3e1a8be76fbd4823dc884f90596ab7c6ac5e1867a305e66ffccfb31a92"
+  },
+  "llvm": {
+    "version": "23.1.4",
+    "sha256": {
+      "x64": "854bffcfc84528e0ee92490ff5c178920abd358a79c3e98f053e41e3e8e4c6d2",
+      "arm64": "f0d2e32424850ffb9b6aef190587a8298353d858a8a7260f490c173fe98d6811"
+    }
+  }
+}

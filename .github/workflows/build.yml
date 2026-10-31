@@ -1,0 +1,139 @@
+# Builds Mesa's llvmpipe for Windows x64 and ARM64 on GitHub's hosted runners
+# (natively: windows-2025 and windows-11-arm), checks each with
+# probe/wglprobe.c (an OpenGL 4.3 core context draws), and on a v* tag
+# publishes a release with build provenance attestations. By hand
+# (workflow_dispatch) it builds and checks without releasing.
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: llvmpipe ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.arch }}
+
+      - name: Build tools
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check meson==1.9.1 ninja mako packaging pyyaml
+          # flex and bison for Mesa's GLSL compiler (x86 binaries; ARM64
+          # Windows runs them emulated), pinned by SHA-256.
+          $zip = Join-Path $env:RUNNER_TEMP 'win_flex_bison.zip'
+          Invoke-WebRequest -Uri https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip -OutFile $zip
+          $have = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($have -ne '8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135') { throw "win_flex_bison has SHA-256 $have" }
+          $dir = Join-Path $env:RUNNER_TEMP 'win_flex_bison'
+          Expand-Archive $zip $dir
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+
+      - name: Build Mesa
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $target = '${{ matrix.arch }}'
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $target >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
+          }
+          ./build.ps1 -Arch $target -Work (Join-Path $env:RUNNER_TEMP 'mesa') -Out out
+
+      - name: Probe (an OpenGL 4.3 core context draws)
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" ${{ matrix.arch }} >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
+          }
+          New-Item -ItemType Directory -Force probe-bin | Out-Null
+          cl /nologo /W3 /O2 probe\wglprobe.c /Fe:probe-bin\wglprobe.exe /Fo:probe-bin\ user32.lib gdi32.lib
+          if ($LASTEXITCODE -ne 0) { throw 'compiling the probe failed' }
+          $result = & .\probe-bin\wglprobe.exe (Resolve-Path out\opengl32.dll).Path 2>&1 | Out-String
+          $result
+          if ($LASTEXITCODE -ne 0) { throw 'the probe failed' }
+          $result.Trim() | Set-Content out\PROBE.txt -Encoding utf8
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (Get-Content versions.json -Raw | ConvertFrom-Json).mesa.version
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path out\* -DestinationPath "dist\murrtty-mesa-$version-${{ matrix.arch }}.zip"
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Keep the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mesa-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.zip
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .mesa.version versions.json)
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --title "Mesa $version llvmpipe ($GITHUB_REF_NAME)" \
+            --notes "Mesa $version llvmpipe for Windows x64 and ARM64, built by this repository's workflow from Mesa's source and LLVM's official release (see each zip's BUILDINFO.txt and PROBE.txt). Verify a zip with: gh attestation verify <zip> -R $GITHUB_REPOSITORY"
