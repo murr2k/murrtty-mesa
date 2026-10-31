@@ -77,11 +77,13 @@ function Build-StaticLib([string]$Name, [string[]]$Sources, [string[]]$Flags, [s
     New-Item -ItemType Directory $obj | Out-Null
     Push-Location $src
     try {
-        cl /nologo /c /O2 /MT /W0 /DNDEBUG @Flags @Sources "/Fo$obj\\"
+        # To the console: a function's output is its return value, and cl
+        # names each file it compiles.
+        cl /nologo /c /O2 /MT /W0 /DNDEBUG @Flags @Sources "/Fo$obj\\" | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "compiling $Name failed ($LASTEXITCODE)" }
     } finally { Pop-Location }
     $out = Join-Path $Work "$Lib-$Arch.lib"
-    lib /nologo "/out:$out" (Join-Path $obj '*.obj')
+    lib /nologo "/out:$out" (Join-Path $obj '*.obj') | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "archiving $Name failed ($LASTEXITCODE)" }
     $out
 }
