@@ -121,7 +121,10 @@ $options = @(
 )
 if ($Sanitize) {
     $options = @($options | Where-Object { $_ -ne '--buildtype=release' }) + @(
-        '--buildtype=debugoptimized', '-Db_sanitize=address', '-Dc_link_args=/INCREMENTAL:NO', '-Dcpp_link_args=/INCREMENTAL:NO'
+        '--buildtype=debugoptimized', '-Db_sanitize=address', '-Dc_link_args=/INCREMENTAL:NO', '-Dcpp_link_args=/INCREMENTAL:NO',
+        # LLVM's libraries are built without the STL's ASan annotations;
+        # linking them to annotated code is a mismatch (LNK2038).
+        '-Dcpp_args=/D_DISABLE_VECTOR_ANNOTATION /D_DISABLE_STRING_ANNOTATION'
     )
 }
 $build = Join-Path $Work "build-$Arch"
@@ -143,6 +146,11 @@ foreach ($dll in 'opengl32.dll', 'libgallium_wgl.dll') {
 $licenses = Join-Path $Out 'licenses'
 New-Item -ItemType Directory -Force $licenses | Out-Null
 Copy-Item (Join-Path $mesa 'docs\license.rst') (Join-Path $licenses 'mesa-license.rst') -Force
+# The license texts license.rst points to (each source file's SPDX
+# identifier names one of them).
+$mesaLicenses = Join-Path $licenses 'mesa'
+if (Test-Path $mesaLicenses) { Remove-Item $mesaLicenses -Recurse -Force }
+Copy-Item (Join-Path $mesa 'licenses') $mesaLicenses -Recurse -Force
 # LLVM's archive carries no license file: this repository keeps the text
 # from its release tag (llvm/LICENSE.TXT at llvmorg-<version>).
 Copy-Item (Join-Path $PSScriptRoot 'licenses\llvm-LICENSE.TXT') (Join-Path $licenses 'llvm-LICENSE.TXT') -Force
