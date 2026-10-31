@@ -47,7 +47,9 @@ if (-not (Test-Path (Join-Path $llvm 'bin\llvm-config.exe'))) {
 $llvmConfig = Join-Path $llvm 'bin\llvm-config.exe'
 $llvmVersion = (& $llvmConfig --version).Trim()
 $rtti = if ((& $llvmConfig --has-rtti).Trim() -eq 'YES') { 'true' } else { 'false' }
-Write-Host "LLVM $llvmVersion, RTTI $rtti"
+$systemLibs = (& $llvmConfig --link-static --system-libs | Out-String).Trim()
+Write-Host "LLVM $llvmVersion, RTTI $rtti, system libraries: $systemLibs"
+Write-Host "LLVM lib folder holds: $(((Get-ChildItem (Join-Path $llvm 'lib') -Filter *.lib | Where-Object { $_.Name -notmatch '^(LLVM|clang|lld|LLD|Polly|MLIR|flang|Fortran)' }).Name) -join ', ')"
 
 # Mesa.
 $mesaName = "mesa-$($versions.mesa.version)"
