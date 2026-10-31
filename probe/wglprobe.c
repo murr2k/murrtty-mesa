@@ -163,6 +163,8 @@ static int drawProgram(GetProc getProc, HMODULE gl) {
 }
 
 int main(int argc, char **argv) {
+    // Unbuffered, so what it printed survives a crash.
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc != 2) return fail("usage: wglprobe <full path of opengl32.dll>");
     HMODULE gl = LoadLibraryExA(argv[1], NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!gl) return fail("could not load the opengl32.dll given");

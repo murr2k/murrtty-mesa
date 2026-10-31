@@ -71,14 +71,15 @@ jobs:
           New-Item -ItemType Directory -Force probe-bin | Out-Null
           cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS probe\wglprobe.c /Fe:probe-bin\wglprobe.exe /Fo:probe-bin\ user32.lib gdi32.lib
           if ($LASTEXITCODE -ne 0) { throw 'compiling the probe failed' }
-          $asan = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter 'clang_rt.asan_dynamic-x86_64.dll' | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
-          if (-not $asan) { throw 'no AddressSanitizer runtime' }
-          Write-Host "AddressSanitizer runtime: $($asan.FullName)"
-          $env:PATH = "$($asan.DirectoryName);$env:PATH"
+          # The runtime of the toolset that built Mesa (vcvarsall's), not another installed one.
+          $asan = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll'
+          if (-not (Test-Path $asan)) { throw "no AddressSanitizer runtime at $asan" }
+          Write-Host "AddressSanitizer runtime: $asan"
+          $env:PATH = "$(Split-Path $asan);$env:PATH"
           $env:ASAN_OPTIONS = 'symbolize=1:print_module_map=1:halt_on_error=1'
           & .\probe-bin\wglprobe.exe (Resolve-Path out\opengl32.dll).Path
           $code = $LASTEXITCODE
-          Write-Host "probe exit $code"
+          Write-Host ('probe exit 0x{0:x8}' -f $code)
           if ($code -ne 0) { exit 1 }
 
   build:
@@ -141,8 +142,9 @@ jobs:
           cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS probe\wglprobe.c /Fe:probe-bin\wglprobe.exe /Fo:probe-bin\ user32.lib gdi32.lib
           if ($LASTEXITCODE -ne 0) { throw 'compiling the probe failed' }
           $result = & .\probe-bin\wglprobe.exe (Resolve-Path out\opengl32.dll).Path 2>&1 | Out-String
+          $code = $LASTEXITCODE
           $result
-          if ($LASTEXITCODE -ne 0) { throw 'the probe failed' }
+          if ($code -ne 0) { throw ('the probe failed (exit 0x{0:x8})' -f $code) }
           $result.Trim() | Set-Content out\PROBE.txt -Encoding utf8
 
       - name: Package
