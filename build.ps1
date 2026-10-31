@@ -41,7 +41,7 @@ $llvmArchive = Join-Path $Work "$llvmName.tar.xz"
 Get-Pinned "https://github.com/llvm/llvm-project/releases/download/llvmorg-$($versions.llvm.version)/$llvmName.tar.xz" $versions.llvm.sha256.$Arch $llvmArchive
 $llvm = Join-Path $Work $llvmName
 if (-not (Test-Path (Join-Path $llvm 'bin\llvm-config.exe'))) {
-    & "$env:SystemRoot\System32\tar.exe" -xf $llvmArchive -C $Work "$llvmName/bin/llvm-config.exe" "$llvmName/lib/*.lib" "$llvmName/include/*" "$llvmName/LICENSE.TXT"
+    & "$env:SystemRoot\System32\tar.exe" -xf $llvmArchive -C $Work "$llvmName/bin/llvm-config.exe" "$llvmName/lib/*.lib" "$llvmName/include/*"
     if ($LASTEXITCODE -ne 0) { throw "extracting LLVM failed ($LASTEXITCODE)" }
 }
 $llvmConfig = Join-Path $llvm 'bin\llvm-config.exe'
@@ -96,7 +96,9 @@ foreach ($dll in 'opengl32.dll', 'libgallium_wgl.dll') {
 $licenses = Join-Path $Out 'licenses'
 New-Item -ItemType Directory -Force $licenses | Out-Null
 Copy-Item (Join-Path $mesa 'docs\license.rst') (Join-Path $licenses 'mesa-license.rst') -Force
-Copy-Item (Join-Path $llvm 'LICENSE.TXT') (Join-Path $licenses 'llvm-LICENSE.TXT') -Force
+# LLVM's archive carries no license file: this repository keeps the text
+# from its release tag (llvm/LICENSE.TXT at llvmorg-<version>).
+Copy-Item (Join-Path $PSScriptRoot 'licenses\llvm-LICENSE.TXT') (Join-Path $licenses 'llvm-LICENSE.TXT') -Force
 
 $msvc = (& cl.exe 2>&1 | Select-Object -First 1).ToString().Trim()
 $info = @(
