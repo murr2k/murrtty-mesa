@@ -48,6 +48,18 @@ if (-not (Test-Path (Join-Path $llvm 'bin\llvm-config.exe'))) {
     if ($LASTEXITCODE -ne 0) { throw "extracting LLVM failed ($LASTEXITCODE)" }
 }
 $llvmConfig = Join-Path $llvm 'bin\llvm-config.exe'
+
+# The C and C++ compiler for Mesa (versions.json compiler): clang-cl from the
+# same LLVM release, with the MSVC environment's headers, C runtime and
+# linker; or MSVC's own cl.
+$compiler = $versions.compiler.name
+$clangCl = Join-Path $llvm 'bin\clang-cl.exe'
+if ($compiler -eq 'clang-cl' -and -not (Test-Path $clangCl)) {
+    & "$env:SystemRoot\System32\tar.exe" -xf $llvmArchive -C $Work "$llvmName/bin/clang.exe" "$llvmName/lib/clang/*"
+    if ($LASTEXITCODE -ne 0) { throw "extracting clang failed ($LASTEXITCODE)" }
+    # clang picks its cl-compatible driver by its own name.
+    Copy-Item (Join-Path $llvm 'bin\clang.exe') $clangCl
+}
 $llvmVersion = (& $llvmConfig --version).Trim()
 $rtti = if ((& $llvmConfig --has-rtti).Trim() -eq 'YES') { 'true' } else { 'false' }
 $systemLibs = (& $llvmConfig --link-static --system-libs | Out-String).Trim()
@@ -102,10 +114,14 @@ $python = (Get-Command python).Source.Replace('\', '/')
 $wrapper = (Join-Path $PSScriptRoot 'tools\llvm-config.py').Replace('\', '/')
 Write-Host "llvm-config through the wrapper: $(& $python $wrapper --link-static --system-libs)"
 $native = Join-Path $Work "native-$Arch.ini"
-@"
-[binaries]
-llvm-config = ['$python', '$wrapper']
-"@ | Set-Content $native -Encoding ascii
+$binaries = @('[binaries]', "llvm-config = ['$python', '$wrapper']")
+if ($compiler -eq 'clang-cl') {
+    $cc = $clangCl.Replace('\', '/')
+    $binaries += @("c = ['$cc']", "cpp = ['$cc']")
+} elseif ($compiler -ne 'cl') {
+    throw "versions.json names compiler '$compiler', not cl or clang-cl"
+}
+$binaries -join "`n" | Set-Content $native -Encoding ascii
 
 $options = @(
     '--buildtype=release', '-Db_ndebug=true', '-Db_vscrt=mt', "-Dcpp_rtti=$rtti",
@@ -158,6 +174,9 @@ Copy-Item (Join-Path $Work "zlib-$($versions.zlib.version)\LICENSE") (Join-Path 
 Copy-Item (Join-Path $Work "zstd-$($versions.zstd.version)\LICENSE") (Join-Path $licenses 'zstd-LICENSE.txt') -Force
 
 $msvc = (& cl.exe 2>&1 | Select-Object -First 1).ToString().Trim()
+if ($compiler -eq 'clang-cl') {
+    $msvc = "$((& $clangCl --version | Select-Object -First 1).ToString().Trim()) (clang-cl), with the headers, C runtime and linker of $msvc"
+}
 $info = @(
     "Mesa $($versions.mesa.version) llvmpipe for Windows $Arch, built for murrtty's software OpenGL fallback.",
     "Mesa source: https://archive.mesa3d.org/$mesaName.tar.xz (SHA-256 $($versions.mesa.sha256))",

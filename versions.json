@@ -10,6 +10,14 @@
       "arm64": "f0d2e32424850ffb9b6aef190587a8298353d858a8a7260f490c173fe98d6811"
     }
   },
+  "compiler": {
+    "name": "clang-cl",
+    "why": "Mesa 26.2.6 built with MSVC cl (toolsets 14.51 and 14.44 alike) corrupts the heap linking any program whose fragment shader reads gl_FragCoord.y, and its AddressSanitizer build reports a stack-use-after-scope inside nir_imm_ivec2 inlined into gl_nir_lower_buffers.c, whose source has none. clang-cl comes from the LLVM release already pinned here."
+  },
+  "msvc": {
+    "toolset": "14.44",
+    "why": "The MSVC toolset whose headers, C runtime and linker the build uses (and whose cl builds zlib and zstd): Visual Studio 2022 17.14's, pinned so that a runner image's newer Visual Studio doesn't change the build unseen."
+  },
   "zlib": {
     "version": "1.3.2",
     "url": "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz",
@@ -19,9 +27,5 @@
     "version": "1.5.7",
     "url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
     "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
-  },
-  "msvc": {
-    "toolset": "14.44",
-    "why": "Built with MSVC 19.51 (toolset 14.51, Visual Studio 2026), Mesa 26.2.6 corrupted the heap linking any shader reading gl_FragCoord.y, and under AddressSanitizer reported a stack-use-after-scope in nir_imm_ivec2 inlined into gl_nir_lower_buffers.c, whose source has none. 14.44 is Visual Studio 2022 17.14's."
   }
 }
