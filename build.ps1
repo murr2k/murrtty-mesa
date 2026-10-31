@@ -61,10 +61,45 @@ if (-not (Test-Path (Join-Path $mesa 'meson.build'))) {
     if ($LASTEXITCODE -ne 0) { throw "extracting Mesa failed ($LASTEXITCODE)" }
 }
 
+# zlib and zstd, which LLVM's static libraries call and its archive lacks,
+# built the same way (static C runtime), from their pinned source releases.
+function Build-StaticLib([string]$Name, [string[]]$Sources, [string[]]$Flags, [string]$Lib) {
+    $info = $versions.$Name
+    $archive = Join-Path $Work "$Name-$($info.version).tar.gz"
+    Get-Pinned $info.url $info.sha256 $archive
+    $src = Join-Path $Work "$Name-$($info.version)"
+    if (-not (Test-Path $src)) {
+        & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $Work
+        if ($LASTEXITCODE -ne 0) { throw "extracting $Name failed ($LASTEXITCODE)" }
+    }
+    $obj = Join-Path $Work "$Name-obj-$Arch"
+    if (Test-Path $obj) { Remove-Item $obj -Recurse -Force }
+    New-Item -ItemType Directory $obj | Out-Null
+    Push-Location $src
+    try {
+        cl /nologo /c /O2 /MT /W0 /DNDEBUG @Flags @Sources "/Fo$obj\\"
+        if ($LASTEXITCODE -ne 0) { throw "compiling $Name failed ($LASTEXITCODE)" }
+    } finally { Pop-Location }
+    $out = Join-Path $Work "$Lib-$Arch.lib"
+    lib /nologo "/out:$out" (Join-Path $obj '*.obj')
+    if ($LASTEXITCODE -ne 0) { throw "archiving $Name failed ($LASTEXITCODE)" }
+    $out
+}
+$zlibLib = Build-StaticLib zlib @('*.c') @('/D_CRT_SECURE_NO_DEPRECATE') 'zlib'
+$zstdLib = Build-StaticLib zstd @('lib\common\*.c', 'lib\compress\*.c', 'lib\decompress\*.c') @('/DZSTD_DISABLE_ASM', '/Ilib', '/Ilib\common') 'zstd'
+
+# Meson asks llvm-config through tools/llvm-config.py, which names those two
+# in place of the build machine's (see it).
+$env:MURRTTY_LLVM_CONFIG = $llvmConfig
+$env:MURRTTY_ZLIB_LIB = $zlibLib
+$env:MURRTTY_ZSTD_LIB = $zstdLib
+$python = (Get-Command python).Source.Replace('\', '/')
+$wrapper = (Join-Path $PSScriptRoot 'tools\llvm-config.py').Replace('\', '/')
+Write-Host "llvm-config through the wrapper: $(& $python $wrapper --link-static --system-libs)"
 $native = Join-Path $Work "native-$Arch.ini"
 @"
 [binaries]
-llvm-config = '$($llvmConfig.Replace('\', '/'))'
+llvm-config = ['$python', '$wrapper']
 "@ | Set-Content $native -Encoding ascii
 
 $options = @(
@@ -101,12 +136,15 @@ Copy-Item (Join-Path $mesa 'docs\license.rst') (Join-Path $licenses 'mesa-licens
 # LLVM's archive carries no license file: this repository keeps the text
 # from its release tag (llvm/LICENSE.TXT at llvmorg-<version>).
 Copy-Item (Join-Path $PSScriptRoot 'licenses\llvm-LICENSE.TXT') (Join-Path $licenses 'llvm-LICENSE.TXT') -Force
+Copy-Item (Join-Path $Work "zlib-$($versions.zlib.version)\LICENSE") (Join-Path $licenses 'zlib-LICENSE.txt') -Force
+Copy-Item (Join-Path $Work "zstd-$($versions.zstd.version)\LICENSE") (Join-Path $licenses 'zstd-LICENSE.txt') -Force
 
 $msvc = (& cl.exe 2>&1 | Select-Object -First 1).ToString().Trim()
 $info = @(
     "Mesa $($versions.mesa.version) llvmpipe for Windows $Arch, built for murrtty's software OpenGL fallback.",
     "Mesa source: https://archive.mesa3d.org/$mesaName.tar.xz (SHA-256 $($versions.mesa.sha256))",
     "LLVM: $llvmName.tar.xz from https://github.com/llvm/llvm-project/releases/tag/llvmorg-$($versions.llvm.version) (SHA-256 $($versions.llvm.sha256.$Arch)), linked statically ($llvmVersion, RTTI $rtti)",
+    "zlib $($versions.zlib.version) ($($versions.zlib.url), SHA-256 $($versions.zlib.sha256)) and zstd $($versions.zstd.version) ($($versions.zstd.url), SHA-256 $($versions.zstd.sha256)), built here statically for LLVM",
     "Compiler: $msvc",
     "Meson $((meson --version).Trim()) options: $($options -join ' ')"
 )
