@@ -56,18 +56,24 @@ jobs:
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x64 >nul && set" | ForEach-Object {
+          $toolset = (Get-Content versions.json -Raw | ConvertFrom-Json).msvc.toolset
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x64 -vcvars_ver=$toolset >nul && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
           }
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue) -or $env:VCToolsVersion -notlike "$toolset.*") { Get-ChildItem "$vs\VC\Tools\MSVC" | Format-Table Name; throw "MSVC toolset $toolset isn't installed on this runner" }
+          Write-Host "MSVC toolset $env:VCToolsVersion"
           ./build.ps1 -Arch x64 -Work (Join-Path $env:RUNNER_TEMP 'mesa') -Out out -Sanitize
 
       - name: Probe under AddressSanitizer
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x64 >nul && set" | ForEach-Object {
+          $toolset = (Get-Content versions.json -Raw | ConvertFrom-Json).msvc.toolset
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x64 -vcvars_ver=$toolset >nul && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
           }
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue) -or $env:VCToolsVersion -notlike "$toolset.*") { Get-ChildItem "$vs\VC\Tools\MSVC" | Format-Table Name; throw "MSVC toolset $toolset isn't installed on this runner" }
+          Write-Host "MSVC toolset $env:VCToolsVersion"
           New-Item -ItemType Directory -Force probe-bin | Out-Null
           cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS probe\wglprobe.c /Fe:probe-bin\wglprobe.exe /Fo:probe-bin\ user32.lib gdi32.lib
           if ($LASTEXITCODE -ne 0) { throw 'compiling the probe failed' }
@@ -126,18 +132,24 @@ jobs:
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
           $target = '${{ matrix.arch }}'
-          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $target >nul && set" | ForEach-Object {
+          $toolset = (Get-Content versions.json -Raw | ConvertFrom-Json).msvc.toolset
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $target -vcvars_ver=$toolset >nul && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
           }
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue) -or $env:VCToolsVersion -notlike "$toolset.*") { Get-ChildItem "$vs\VC\Tools\MSVC" | Format-Table Name; throw "MSVC toolset $toolset isn't installed on this runner" }
+          Write-Host "MSVC toolset $env:VCToolsVersion"
           ./build.ps1 -Arch $target -Work (Join-Path $env:RUNNER_TEMP 'mesa') -Out out
 
       - name: Probe (an OpenGL 4.3 core context draws)
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" ${{ matrix.arch }} >nul && set" | ForEach-Object {
+          $toolset = (Get-Content versions.json -Raw | ConvertFrom-Json).msvc.toolset
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" ${{ matrix.arch }} -vcvars_ver=$toolset >nul && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
           }
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue) -or $env:VCToolsVersion -notlike "$toolset.*") { Get-ChildItem "$vs\VC\Tools\MSVC" | Format-Table Name; throw "MSVC toolset $toolset isn't installed on this runner" }
+          Write-Host "MSVC toolset $env:VCToolsVersion"
           New-Item -ItemType Directory -Force probe-bin | Out-Null
           cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS probe\wglprobe.c /Fe:probe-bin\wglprobe.exe /Fo:probe-bin\ user32.lib gdi32.lib
           if ($LASTEXITCODE -ne 0) { throw 'compiling the probe failed' }
