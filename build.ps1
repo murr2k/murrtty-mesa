@@ -16,7 +16,10 @@ DLLs, the license texts and BUILDINFO.txt in -Out.
 param(
     [Parameter(Mandatory = $true)][ValidateSet('x64', 'arm64')][string]$Arch,
     [string]$Work = (Join-Path $PSScriptRoot 'work'),
-    [string]$Out = (Join-Path $PSScriptRoot 'out')
+    [string]$Out = (Join-Path $PSScriptRoot 'out'),
+    # A diagnostic build: AddressSanitizer, with debug information, never
+    # released (the workflow's diagnose run).
+    [switch]$Sanitize
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,6 +119,11 @@ $options = @(
     '-Dvalgrind=disabled', '-Dlibunwind=disabled', '-Dlmsensors=disabled', '-Dbuild-tests=false', '-Dtools=[]',
     '-Dperfetto=false', '-Dteflon=false', '-Dgallium-extra-hud=false'
 )
+if ($Sanitize) {
+    $options = @($options | Where-Object { $_ -ne '--buildtype=release' }) + @(
+        '--buildtype=debugoptimized', '-Db_sanitize=address', '-Dc_link_args=/INCREMENTAL:NO', '-Dcpp_link_args=/INCREMENTAL:NO'
+    )
+}
 $build = Join-Path $Work "build-$Arch"
 $prefix = Join-Path $Work "install-$Arch"
 if (Test-Path $build) { Remove-Item $build -Recurse -Force }
