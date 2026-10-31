@@ -135,14 +135,24 @@ $options = @(
     '-Dvalgrind=disabled', '-Dlibunwind=disabled', '-Dlmsensors=disabled', '-Dbuild-tests=false', '-Dtools=[]',
     '-Dperfetto=false', '-Dteflon=false', '-Dgallium-extra-hud=false'
 )
+$cArgs = @()
+$cppArgs = @()
 if ($Sanitize) {
     $options = @($options | Where-Object { $_ -ne '--buildtype=release' }) + @(
-        '--buildtype=debugoptimized', '-Db_sanitize=address', '-Dc_link_args=/INCREMENTAL:NO', '-Dcpp_link_args=/INCREMENTAL:NO',
-        # LLVM's libraries are built without the STL's ASan annotations;
-        # linking them to annotated code is a mismatch (LNK2038).
-        '-Dcpp_args=/D_DISABLE_VECTOR_ANNOTATION /D_DISABLE_STRING_ANNOTATION'
+        '--buildtype=debugoptimized', '-Db_sanitize=address', '-Dc_link_args=/INCREMENTAL:NO', '-Dcpp_link_args=/INCREMENTAL:NO'
     )
+    # LLVM's libraries are built without the STL's ASan annotations;
+    # linking them to annotated code is a mismatch (LNK2038).
+    $cppArgs += @('/D_DISABLE_VECTOR_ANNOTATION', '/D_DISABLE_STRING_ANNOTATION')
 }
+if ($compiler -eq 'clang-cl') {
+    # What clang-cl lacks of MSVC's for Mesa (see the header).
+    $compat = (Join-Path $PSScriptRoot 'tools\clang-cl-compat.h').Replace('\', '/')
+    $cArgs += "/FI$compat"
+    $cppArgs += "/FI$compat"
+}
+if ($cArgs.Count -gt 0) { $options += "-Dc_args=$($cArgs -join ' ')" }
+if ($cppArgs.Count -gt 0) { $options += "-Dcpp_args=$($cppArgs -join ' ')" }
 $build = Join-Path $Work "build-$Arch"
 $prefix = Join-Path $Work "install-$Arch"
 if (Test-Path $build) { Remove-Item $build -Recurse -Force }

@@ -87,7 +87,8 @@ jobs:
           if (-not (Test-Path $asan)) { throw "no AddressSanitizer runtime at $asan" }
           Write-Host "AddressSanitizer runtime: $asan"
           $env:PATH = "$(Split-Path $asan);$env:PATH"
-          $env:ASAN_OPTIONS = 'symbolize=1:print_module_map=1:halt_on_error=1'
+          # Every error, not just the first (MSVC's continue_on_error, to stderr).
+          $env:ASAN_OPTIONS = 'symbolize=1:continue_on_error=2'
           & .\probe-bin\wglprobe.exe (Resolve-Path out\opengl32.dll).Path
           $code = $LASTEXITCODE
           Write-Host ('probe exit 0x{0:x8}' -f $code)
