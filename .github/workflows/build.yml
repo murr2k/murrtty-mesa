@@ -27,7 +27,7 @@ jobs:
     name: llvmpipe x64 under AddressSanitizer
     if: github.event_name == 'workflow_dispatch' && inputs.diagnose
     runs-on: windows-2025
-    timeout-minutes: 150
+    timeout-minutes: 300
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,13 +77,8 @@ jobs:
           New-Item -ItemType Directory -Force probe-bin | Out-Null
           cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS probe\wglprobe.c /Fe:probe-bin\wglprobe.exe /Fo:probe-bin\ user32.lib gdi32.lib
           if ($LASTEXITCODE -ne 0) { throw 'compiling the probe failed' }
-          # The runtime of the compiler that built Mesa: clang-cl's from the LLVM
-          # release, or cl's from vcvarsall's toolset (not another installed one).
-          if ((Get-Content versions.json -Raw | ConvertFrom-Json).compiler.name -eq 'clang-cl') {
-            $asan = (Get-ChildItem (Join-Path $env:RUNNER_TEMP 'mesa') -Recurse -Filter 'clang_rt.asan_dynamic-x86_64.dll' | Select-Object -First 1).FullName
-          } else {
-            $asan = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll'
-          }
+          # The runtime of the toolset that built Mesa (vcvarsall's), not another installed one.
+          $asan = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll'
           if (-not (Test-Path $asan)) { throw "no AddressSanitizer runtime at $asan" }
           Write-Host "AddressSanitizer runtime: $asan"
           $env:PATH = "$(Split-Path $asan);$env:PATH"
@@ -98,7 +93,7 @@ jobs:
     name: llvmpipe ${{ matrix.arch }}
     if: github.event_name != 'workflow_dispatch' || !inputs.diagnose
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:

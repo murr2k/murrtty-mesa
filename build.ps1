@@ -2,16 +2,23 @@
 .SYNOPSIS
 Builds Mesa's llvmpipe (opengl32.dll and libgallium_wgl.dll) for Windows, for
 murrtty's software OpenGL fallback. Run from a Visual Studio developer
-environment for the target (vcvarsall x64 or arm64) on a machine of that
-architecture; GitHub's windows-2025 and windows-11-arm runners do it in
-.github/workflows/build.yml.
+environment for the target (vcvarsall x64 or arm64, with the MSVC toolset
+versions.json pins) on a machine of that architecture; GitHub's
+windows-2025 and windows-11-arm runners do it in .github/workflows/build.yml.
 
 .DESCRIPTION
-Downloads Mesa's source and LLVM's official Windows toolchain at the versions
-and SHA-256s pinned in versions.json, refuses either if its hash differs,
-builds with Meson and MSVC (static C runtime, LLVM linked statically, every
-driver and API but llvmpipe and desktop OpenGL left out), and puts the two
-DLLs, the license texts and BUILDINFO.txt in -Out.
+Downloads Mesa's and LLVM's source releases at the versions and SHA-256s
+pinned in versions.json, refuses either if its hash differs, builds LLVM's
+libraries (the target's architecture only) and then Mesa with Meson, both
+with that MSVC toolset and a static C runtime, LLVM linked statically and
+every driver and API but llvmpipe and desktop OpenGL left out, and puts the
+two DLLs, the license texts and BUILDINFO.txt in -Out.
+
+LLVM is built here rather than taken from LLVM's prebuilt Windows release:
+that release's libraries are compiled against a newer MSVC C++ library than
+the toolset Mesa is built with, and linked into Mesa they corrupted the heap
+(any program whose fragment shader reads gl_FragCoord.y), or failed to link
+(__std_find_trivial_8 unresolved on ARM64).
 #>
 param(
     [Parameter(Mandatory = $true)][ValidateSet('x64', 'arm64')][string]$Arch,
@@ -24,7 +31,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $versions = Get-Content (Join-Path $PSScriptRoot 'versions.json') -Raw | ConvertFrom-Json
-$llvmTriple = @{ x64 = 'x86_64-pc-windows-msvc'; arm64 = 'aarch64-pc-windows-msvc' }[$Arch]
 
 function Get-Pinned([string]$Url, [string]$Sha256, [string]$File) {
     if (-not (Test-Path $File)) {
@@ -38,33 +44,41 @@ function Get-Pinned([string]$Url, [string]$Sha256, [string]$File) {
 
 New-Item -ItemType Directory -Force $Work, $Out | Out-Null
 
-# LLVM: only what Mesa links against and asks llvm-config about.
-$llvmName = "clang+llvm-$($versions.llvm.version)-$llvmTriple"
-$llvmArchive = Join-Path $Work "$llvmName.tar.xz"
-Get-Pinned "https://github.com/llvm/llvm-project/releases/download/llvmorg-$($versions.llvm.version)/$llvmName.tar.xz" $versions.llvm.sha256.$Arch $llvmArchive
-$llvm = Join-Path $Work $llvmName
-if (-not (Test-Path (Join-Path $llvm 'bin\llvm-config.exe'))) {
-    & "$env:SystemRoot\System32\tar.exe" -xf $llvmArchive -C $Work "$llvmName/bin/llvm-config.exe" "$llvmName/lib/*.lib" "$llvmName/include/*"
+# LLVM: its libraries and llvm-config, used from the build tree.
+$llvmSrcName = "llvm-project-$($versions.llvm.version).src"
+$llvmArchive = Join-Path $Work "$llvmSrcName.tar.xz"
+Get-Pinned "https://github.com/llvm/llvm-project/releases/download/llvmorg-$($versions.llvm.version)/$llvmSrcName.tar.xz" $versions.llvm.sha256 $llvmArchive
+$llvmSrc = Join-Path $Work $llvmSrcName
+if (-not (Test-Path (Join-Path $llvmSrc 'llvm\CMakeLists.txt'))) {
+    # What LLVM's own build reads (its CMake looks for libc's folder too).
+    & "$env:SystemRoot\System32\tar.exe" -xf $llvmArchive -C $Work "$llvmSrcName/llvm" "$llvmSrcName/cmake" "$llvmSrcName/third-party" "$llvmSrcName/libc"
     if ($LASTEXITCODE -ne 0) { throw "extracting LLVM failed ($LASTEXITCODE)" }
 }
-$llvmConfig = Join-Path $llvm 'bin\llvm-config.exe'
-
-# The C and C++ compiler for Mesa (versions.json compiler): clang-cl from the
-# same LLVM release, with the MSVC environment's headers, C runtime and
-# linker; or MSVC's own cl.
-$compiler = $versions.compiler.name
-$clangCl = Join-Path $llvm 'bin\clang-cl.exe'
-if ($compiler -eq 'clang-cl' -and -not (Test-Path $clangCl)) {
-    & "$env:SystemRoot\System32\tar.exe" -xf $llvmArchive -C $Work "$llvmName/bin/clang.exe" "$llvmName/lib/clang/*"
-    if ($LASTEXITCODE -ne 0) { throw "extracting clang failed ($LASTEXITCODE)" }
-    # clang picks its cl-compatible driver by its own name.
-    Copy-Item (Join-Path $llvm 'bin\clang.exe') $clangCl
+$llvm = Join-Path $Work "llvm-build-$Arch"
+$llvmTarget = @{ x64 = 'X86'; arm64 = 'AArch64' }[$Arch]
+if (-not (Test-Path (Join-Path $llvm 'bin\llvm-config.exe'))) {
+    # No DIA SDK: the pinned toolset has no ATL, and Mesa needs no PDB reader.
+    cmake -G Ninja -S (Join-Path $llvmSrc 'llvm') -B $llvm -Wno-dev `
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+        "-DLLVM_TARGETS_TO_BUILD=$llvmTarget" -DLLVM_ENABLE_PROJECTS= `
+        -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_ENABLE_RTTI=OFF `
+        -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF `
+        -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_LIBPFM=OFF -DLLVM_ENABLE_Z3_SOLVER=OFF `
+        -DLLVM_ENABLE_BACKTRACES=OFF -DLLVM_ENABLE_UNWIND_TABLES=OFF -DLLVM_ENABLE_CRASH_OVERRIDES=OFF `
+        -DLLVM_ENABLE_BINDINGS=OFF -DLLVM_ENABLE_PLUGINS=OFF -DLLVM_OPTIMIZED_TABLEGEN=ON -DLLVM_ENABLE_DIA_SDK=OFF `
+        -DLLVM_BUILD_TOOLS=OFF -DLLVM_BUILD_UTILS=OFF -DLLVM_INCLUDE_UTILS=OFF `
+        -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_DOCS=OFF
+    if ($LASTEXITCODE -ne 0) { throw "configuring LLVM failed ($LASTEXITCODE)" }
+    ninja -C $llvm
+    if ($LASTEXITCODE -ne 0) { throw "building LLVM failed ($LASTEXITCODE)" }
+    ninja -C $llvm llvm-config
+    if ($LASTEXITCODE -ne 0) { throw "building llvm-config failed ($LASTEXITCODE)" }
 }
+$llvmConfig = Join-Path $llvm 'bin\llvm-config.exe'
 $llvmVersion = (& $llvmConfig --version).Trim()
 $rtti = if ((& $llvmConfig --has-rtti).Trim() -eq 'YES') { 'true' } else { 'false' }
 $systemLibs = (& $llvmConfig --link-static --system-libs | Out-String).Trim()
-Write-Host "LLVM $llvmVersion, RTTI $rtti, system libraries: $systemLibs"
-Write-Host "LLVM lib folder holds: $(((Get-ChildItem (Join-Path $llvm 'lib') -Filter *.lib | Where-Object { $_.Name -notmatch '^(LLVM|clang|lld|LLD|Polly|MLIR|flang|Fortran)' }).Name) -join ', ')"
+Write-Host "LLVM $llvmVersion for $llvmTarget, RTTI $rtti, system libraries: $systemLibs"
 
 # Mesa.
 $mesaName = "mesa-$($versions.mesa.version)"
@@ -76,52 +90,8 @@ if (-not (Test-Path (Join-Path $mesa 'meson.build'))) {
     if ($LASTEXITCODE -ne 0) { throw "extracting Mesa failed ($LASTEXITCODE)" }
 }
 
-# zlib and zstd, which LLVM's static libraries call and its archive lacks,
-# built the same way (static C runtime), from their pinned source releases.
-function Build-StaticLib([string]$Name, [string[]]$Sources, [string[]]$Flags, [string]$Lib) {
-    $info = $versions.$Name
-    $archive = Join-Path $Work "$Name-$($info.version).tar.gz"
-    Get-Pinned $info.url $info.sha256 $archive
-    $src = Join-Path $Work "$Name-$($info.version)"
-    if (-not (Test-Path $src)) {
-        & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $Work
-        if ($LASTEXITCODE -ne 0) { throw "extracting $Name failed ($LASTEXITCODE)" }
-    }
-    $obj = Join-Path $Work "$Name-obj-$Arch"
-    if (Test-Path $obj) { Remove-Item $obj -Recurse -Force }
-    New-Item -ItemType Directory $obj | Out-Null
-    Push-Location $src
-    try {
-        # To the console: a function's output is its return value, and cl
-        # names each file it compiles.
-        cl /nologo /c /O2 /MT /W0 /DNDEBUG @Flags @Sources "/Fo$obj\\" | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "compiling $Name failed ($LASTEXITCODE)" }
-    } finally { Pop-Location }
-    $out = Join-Path $Work "$Lib-$Arch.lib"
-    lib /nologo "/out:$out" (Join-Path $obj '*.obj') | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "archiving $Name failed ($LASTEXITCODE)" }
-    $out
-}
-$zlibLib = Build-StaticLib zlib @('*.c') @('/D_CRT_SECURE_NO_DEPRECATE') 'zlib'
-$zstdLib = Build-StaticLib zstd @('lib\common\*.c', 'lib\compress\*.c', 'lib\decompress\*.c') @('/DZSTD_DISABLE_ASM', '/Ilib', '/Ilib\common') 'zstd'
-
-# Meson asks llvm-config through tools/llvm-config.py, which names those two
-# in place of the build machine's (see it).
-$env:MURRTTY_LLVM_CONFIG = $llvmConfig
-$env:MURRTTY_ZLIB_LIB = $zlibLib
-$env:MURRTTY_ZSTD_LIB = $zstdLib
-$python = (Get-Command python).Source.Replace('\', '/')
-$wrapper = (Join-Path $PSScriptRoot 'tools\llvm-config.py').Replace('\', '/')
-Write-Host "llvm-config through the wrapper: $(& $python $wrapper --link-static --system-libs)"
 $native = Join-Path $Work "native-$Arch.ini"
-$binaries = @('[binaries]', "llvm-config = ['$python', '$wrapper']")
-if ($compiler -eq 'clang-cl') {
-    $cc = $clangCl.Replace('\', '/')
-    $binaries += @("c = ['$cc']", "cpp = ['$cc']")
-} elseif ($compiler -ne 'cl') {
-    throw "versions.json names compiler '$compiler', not cl or clang-cl"
-}
-$binaries -join "`n" | Set-Content $native -Encoding ascii
+@('[binaries]', "llvm-config = ['$($llvmConfig.Replace('\', '/'))']") -join "`n" | Set-Content $native -Encoding ascii
 
 $options = @(
     '--buildtype=release', '-Db_ndebug=true', '-Db_vscrt=mt', "-Dcpp_rtti=$rtti",
@@ -135,24 +105,14 @@ $options = @(
     '-Dvalgrind=disabled', '-Dlibunwind=disabled', '-Dlmsensors=disabled', '-Dbuild-tests=false', '-Dtools=[]',
     '-Dperfetto=false', '-Dteflon=false', '-Dgallium-extra-hud=false'
 )
-$cArgs = @()
-$cppArgs = @()
 if ($Sanitize) {
     $options = @($options | Where-Object { $_ -ne '--buildtype=release' }) + @(
-        '--buildtype=debugoptimized', '-Db_sanitize=address', '-Dc_link_args=/INCREMENTAL:NO', '-Dcpp_link_args=/INCREMENTAL:NO'
+        '--buildtype=debugoptimized', '-Db_sanitize=address', '-Dc_link_args=/INCREMENTAL:NO', '-Dcpp_link_args=/INCREMENTAL:NO',
+        # LLVM's libraries are built without the C++ library's ASan
+        # annotations; linking them to annotated code is a mismatch (LNK2038).
+        '-Dcpp_args=/D_DISABLE_VECTOR_ANNOTATION /D_DISABLE_STRING_ANNOTATION'
     )
-    # LLVM's libraries are built without the STL's ASan annotations;
-    # linking them to annotated code is a mismatch (LNK2038).
-    $cppArgs += @('/D_DISABLE_VECTOR_ANNOTATION', '/D_DISABLE_STRING_ANNOTATION')
 }
-if ($compiler -eq 'clang-cl') {
-    # What clang-cl lacks of MSVC's for Mesa (see the header).
-    $compat = (Join-Path $PSScriptRoot 'tools\clang-cl-compat.h').Replace('\', '/')
-    $cArgs += "/FI$compat"
-    $cppArgs += "/FI$compat"
-}
-if ($cArgs.Count -gt 0) { $options += "-Dc_args=$($cArgs -join ' ')" }
-if ($cppArgs.Count -gt 0) { $options += "-Dcpp_args=$($cppArgs -join ' ')" }
 $build = Join-Path $Work "build-$Arch"
 $prefix = Join-Path $Work "install-$Arch"
 if (Test-Path $build) { Remove-Item $build -Recurse -Force }
@@ -177,22 +137,14 @@ Copy-Item (Join-Path $mesa 'docs\license.rst') (Join-Path $licenses 'mesa-licens
 $mesaLicenses = Join-Path $licenses 'mesa'
 if (Test-Path $mesaLicenses) { Remove-Item $mesaLicenses -Recurse -Force }
 Copy-Item (Join-Path $mesa 'licenses') $mesaLicenses -Recurse -Force
-# LLVM's archive carries no license file: this repository keeps the text
-# from its release tag (llvm/LICENSE.TXT at llvmorg-<version>).
-Copy-Item (Join-Path $PSScriptRoot 'licenses\llvm-LICENSE.TXT') (Join-Path $licenses 'llvm-LICENSE.TXT') -Force
-Copy-Item (Join-Path $Work "zlib-$($versions.zlib.version)\LICENSE") (Join-Path $licenses 'zlib-LICENSE.txt') -Force
-Copy-Item (Join-Path $Work "zstd-$($versions.zstd.version)\LICENSE") (Join-Path $licenses 'zstd-LICENSE.txt') -Force
+Copy-Item (Join-Path $llvmSrc 'llvm\LICENSE.TXT') (Join-Path $licenses 'llvm-LICENSE.TXT') -Force
 
 $msvc = (& cl.exe 2>&1 | Select-Object -First 1).ToString().Trim()
-if ($compiler -eq 'clang-cl') {
-    $msvc = "$((& $clangCl --version | Select-Object -First 1).ToString().Trim()) (clang-cl), with the headers, C runtime and linker of $msvc"
-}
 $info = @(
     "Mesa $($versions.mesa.version) llvmpipe for Windows $Arch, built for murrtty's software OpenGL fallback.",
     "Mesa source: https://archive.mesa3d.org/$mesaName.tar.xz (SHA-256 $($versions.mesa.sha256))",
-    "LLVM: $llvmName.tar.xz from https://github.com/llvm/llvm-project/releases/tag/llvmorg-$($versions.llvm.version) (SHA-256 $($versions.llvm.sha256.$Arch)), linked statically ($llvmVersion, RTTI $rtti)",
-    "zlib $($versions.zlib.version) ($($versions.zlib.url), SHA-256 $($versions.zlib.sha256)) and zstd $($versions.zstd.version) ($($versions.zstd.url), SHA-256 $($versions.zstd.sha256)), built here statically for LLVM",
-    "Compiler: $msvc",
+    "LLVM: $llvmSrcName.tar.xz from https://github.com/llvm/llvm-project/releases/tag/llvmorg-$($versions.llvm.version) (SHA-256 $($versions.llvm.sha256)), built here for $llvmTarget and linked statically ($llvmVersion, RTTI $rtti)",
+    "Compiler: $msvc (MSVC toolset $env:VCToolsVersion), static C runtime",
     "Meson $((meson --version).Trim()) options: $($options -join ' ')"
 )
 if ($env:GITHUB_SHA) { $info += "Built by $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID from commit $env:GITHUB_SHA on $env:ImageOS $env:ImageVersion" }
